@@ -1,0 +1,20 @@
+[package]
+name = "autocorrect"
+version = "0.1.0"
+edition = "2021"
+authors = ["Windows Autocorrect Team"]
+description = "System-wide autocorrect tool for Windows"
+
+[dependencies]
+parking_lot = "0.12"
+ahash = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "windef", "minwindef", "shellapi", "libloaderapi", "wingdi", "processthreadsapi", "winbase"] }
+tray-icon = "0.14"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
