@@ -34,11 +34,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use crate::symspell::SymSpell;
 
-#[cfg(feature = "embed-dictionary")]
+// Embed the dictionary file at compile time
+// If the file doesn't exist, this will fail at compile time with a clear error
 const EMBEDDED_DICTIONARY: &str = include_str!("../dictionary/words.txt");
-
-#[cfg(not(feature = "embed-dictionary"))]
-const EMBEDDED_DICTIONARY: &str = option_env!("AUTOCORRECT_EMBEDDED_DICTIONARY").unwrap_or("");
 
 /// Manages dictionary loading and word storage.
 ///

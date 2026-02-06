@@ -26,9 +26,6 @@
 //! and the original word is restored.
 
 use crate::dictionary::Dictionary;
-use crate::symspell::SymSpell;
-use crate::trigram::TrigramModel;
-use std::path::Path;
 use std::time::Instant;
 use winapi::um::winuser::*;
 
@@ -61,10 +58,8 @@ struct UndoState {
 /// triggers corrections using the SymSpell algorithm. Manages the
 /// undo buffer for reverting unwanted corrections.
 pub struct Corrector {
-    /// Dictionary containing word frequencies.
+    /// Dictionary containing word frequencies and SymSpell instance.
     dictionary: Dictionary,
-    /// SymSpell instance for fast spell correction.
-    symspell: SymSpell,
     /// The word currently being typed (since last word boundary).
     current_word: String,
     /// Whether autocorrection is enabled.
@@ -106,8 +101,6 @@ impl Corrector {
 
     fn new_with_settings(max_edit_distance: i32, enabled: bool, undo_timeout_seconds: u64) -> Self {
         let max_edit_distance = max_edit_distance.max(0);
-        let mut symspell = SymSpell::new(max_edit_distance);
-        symspell.trigram_model = Some(TrigramModel::new());
 
         Self {
             dictionary: Dictionary::new(),
@@ -260,13 +253,12 @@ impl Corrector {
         if self.current_word.is_empty() {
             return;
         }
-        
+
         // Check if word needs correction
         let word_lower = self.current_word.to_lowercase();
-        
-        let context = self.previous_two_words();
-        let suggestions = self.symspell.lookup(&word_lower, self.max_edit_distance, context);
-        if let Some(correction) = suggestions.first() {
+
+        // Use dictionary to get correction (it uses SymSpell internally)
+        if let Some(correction) = self.dictionary.get_correction(&word_lower) {
             // Store undo state
             self.undo_buffer = Some(UndoState {
                 original_word: self.current_word.clone(),
@@ -274,13 +266,13 @@ impl Corrector {
                 timestamp: Instant::now(),
             });
             self.last_correction_time = Some(Instant::now());
-            
+
             // Perform the correction
             self.replace_word(&correction);
-            
+
             println!("Corrected: '{}' -> '{}'", self.current_word, correction);
         }
-        
+
         // Clear current word
         self.current_word.clear();
     }
