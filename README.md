@@ -16,7 +16,125 @@ A privacy-first, system-wide autocorrect tool for Windows written in Rust. Uses 
 ## Requirements
 
 - Windows 10 or later (64-bit)
-- Rust toolchain (for building from source)
+- Rust toolchain (only for building from source)
+
+## Installation
+
+### Option 1: MSI Installer (Recommended)
+
+Download the latest `.msi` installer from [GitHub Releases](https://github.com/anselmlong/autocorrect/releases).
+
+1. Run the installer
+2. The application will start automatically and add itself to Windows Startup
+3. A green icon appears in your system tray
+
+### Option 2: Portable ZIP
+
+1. Download `autocorrect-portable-x86_64-pc-windows-msvc.zip` from [GitHub Releases](https://github.com/anselmlong/autocorrect/releases)
+2. Extract to any folder
+3. Run `autocorrect.exe`
+
+### Option 3: Build from Source
+
+#### Prerequisites
+- [Rust](https://rustup.rs/) (latest stable)
+- Git
+
+#### Build Steps
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/anselmlong/autocorrect.git
+   cd autocorrect
+   ```
+
+2. **Build the application**:
+   ```bash
+   cargo build --release
+   ```
+
+3. **Run**:
+   ```bash
+   cargo run --release
+   ```
+
+The compiled executable will be in `target/release/autocorrect.exe`.
+
+## CLI Arguments
+
+The application supports several command-line options:
+
+```
+autocorrect [OPTIONS]
+
+Options:
+      --disabled          Start with autocorrect disabled
+  -d, --dictionary <PATH>  Custom dictionary file path
+      --console           Run in console mode (don't hide console window)
+      --check-update      Check for updates and exit
+  -h, --help              Print help
+  -V, --version           Print version
+```
+
+### Examples
+
+```bash
+# Start disabled
+autocorrect --disabled
+
+# Use custom dictionary
+autocorrect --dictionary C:\path\to\my\words.txt
+
+# Check for updates
+autocorrect --check-update
+```
+
+## Configuration
+
+Autocorrect can be configured via a TOML configuration file.
+
+### Config File Location
+
+- **Windows**: `%APPDATA%\autocorrect\config.toml`
+
+### Configuration Options
+
+Create or edit `config.toml`:
+
+```toml
+max_edit_distance = 2
+enabled_by_default = true
+undo_timeout_seconds = 5
+hotkey_toggle = "Ctrl+Shift+A"
+auto_check_updates = true
+```
+
+### Options Explained
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_edit_distance` | integer | 2 | Maximum character edits allowed (1-3) |
+| `enabled_by_default` | boolean | true | Start with autocorrect enabled |
+| `undo_timeout_seconds` | integer | 5 | Seconds to allow undo after correction |
+| `hotkey_toggle` | string | "Ctrl+Shift+A" | Hotkey to toggle autocorrect |
+| `auto_check_updates` | boolean | true | Check for updates on startup |
+
+## Auto-Updates
+
+The application can automatically check for and install updates from GitHub Releases.
+
+### Check for Updates
+
+Run with the `--check-update` flag:
+```bash
+autocorrect --check-update
+```
+
+If an update is available, it will be downloaded and installed automatically.
+
+### Enable/Disable Auto-Check
+
+Set `auto_check_updates = false` in your config file to disable automatic update checks on startup.
 
 ## Building
 

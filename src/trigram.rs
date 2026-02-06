@@ -1,16 +1,52 @@
-// trigram.rs - Trigram Language Model for context-based word scoring
-// Provides conditional probabilities P(word | prev_word, two_words_ago)
+//! Trigram Language Model for context-based word scoring.
+//!
+//! This module provides a simple n-gram language model that estimates
+//! the probability of a word given the previous two words in context.
+//!
+//! # N-gram Backoff
+//!
+//! The model uses backoff smoothing:
+//! - First tries P(word | w-2, w-1) [trigram]
+//! - Falls back to P(word | w-1) [bigram]
+//! - Falls back to P(word) [unigram]
+//! - Uses a small epsilon (1e-9) for unseen words
+//!
+//! # Usage
+//!
+//! The trigram model is used by `SymSpell` to rerank suggestions based
+//! on context. For example, given "the quick ___", "brown" would score
+//! higher than "hello" because "the quick brown" is a common trigram.
+//!
+//! # Training
+//!
+//! The model is trained on a corpus of sentences using the `train()` method:
+//! ```rust
+//! let mut model = TrigramModel::new();
+//! model.train(&["the quick brown fox", "the lazy dog"]);
+//! ```
 
 use ahash::AHashMap;
 
+/// A trigram language model with backoff smoothing.
+///
+/// Stores counts for unigrams (single words), bigrams (word pairs),
+/// and trigrams (word triples) to compute conditional probabilities.
 pub struct TrigramModel {
+    /// Counts of word triples: (w-2, w-1, w) → count.
     trigram_counts: AHashMap<(String, String, String), u64>,
+    /// Counts of word pairs: (w-1, w) → count.
     bigram_counts: AHashMap<(String, String), u64>,
+    /// Counts of single words: w → count.
     unigram_counts: AHashMap<String, u64>,
+    /// Total number of word tokens in the training corpus.
     total_words: u64,
 }
 
 impl TrigramModel {
+    /// Create a new empty trigram model.
+    ///
+    /// All counts are initialized to zero. Use `train()` to populate
+    /// the model with data from a text corpus.
     pub fn new() -> Self {
         Self {
             trigram_counts: AHashMap::new(),
@@ -20,7 +56,19 @@ impl TrigramModel {
         }
     }
 
-    /// Train the trigram model on a corpus of sentences
+    /// Train the model on a corpus of sentences.
+    ///
+    /// Extracts unigrams, bigrams, and trigrams from each sentence
+    /// and updates the count tables. Words are lowercased before counting.
+    ///
+    /// # Arguments
+    /// * `corpus` - A slice of sentences to train on
+    ///
+    /// # Example
+    /// ```rust
+    /// let mut model = TrigramModel::new();
+    /// model.train(&["the quick brown fox", "the lazy dog"]);
+    /// ```
     pub fn train(&mut self, corpus: &[&str]) {
         for sentence in corpus {
             let words: Vec<String> = sentence
@@ -51,7 +99,24 @@ impl TrigramModel {
         }
     }
 
-    /// Returns P(word | prev, prev_prev)
+    /// Calculate the conditional probability P(word | prev, prev_prev).
+    ///
+    /// Uses backoff smoothing: tries trigram, then bigram, then unigram.
+    /// Returns a small epsilon (1e-9) for unseen word combinations.
+    ///
+    /// # Arguments
+    /// * `word` - The word to calculate probability for
+    /// * `prev` - The previous word (w-1)
+    /// * `prev_prev` - The word before the previous word (w-2)
+    ///
+    /// # Returns
+    /// The conditional probability as a float between 0 and 1.
+    ///
+    /// # Example
+    /// ```rust
+    /// let p = model.trigram_probability("fox", "quick", "the");
+    /// // Returns P("fox" | "quick", "the")
+    /// ```
     pub fn trigram_probability(
         &self,
         word: &str,

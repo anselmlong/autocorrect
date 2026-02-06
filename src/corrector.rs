@@ -1,65 +1,179 @@
-// corrector.rs - Word tracking, correction logic, and undo buffer
-// Handles keyboard input, builds words, triggers corrections, and manages undo
+//! Word tracking, correction logic, and undo buffer management.
+//!
+//! This module is the core of the autocorrection system. It:
+//! - Tracks words as the user types
+//! - Detects word boundaries (space, punctuation, enter)
+//! - Queries the SymSpell dictionary for corrections
+//! - Replaces misspelled words with corrections
+//! - Provides an undo mechanism (Ctrl+Z within 5 seconds)
+//!
+//! # Word Lifecycle
+//!
+//! ```text
+//! User Types:    t  e  h  [space]
+//!                ↓  ↓  ↓     ↓
+//! Current Word: "t" → "te" → "teh" → TRIGGER CORRECTION
+//!                                      ↓
+//!                                  Check Dictionary
+//!                                      ↓
+//!                                  Replace with "the"
+//! ```
+//!
+//! # Undo Mechanism
+//!
+//! After a correction, the original word is stored in `undo_buffer`.
+//! If the user presses Ctrl+Z within 5 seconds, the correction is undone
+//! and the original word is restored.
 
 use crate::dictionary::Dictionary;
 use crate::symspell::SymSpell;
+use crate::trigram::TrigramModel;
+use std::path::Path;
 use std::time::Instant;
 use winapi::um::winuser::*;
 
+/// Virtual key code for Backspace.
 const VK_BACK: u32 = 0x08;
+/// Virtual key code for Enter/Return.
 const VK_RETURN: u32 = 0x0D;
+/// Virtual key code for Space.
 const VK_SPACE: u32 = 0x20;
+/// Virtual key code for Control.
 const VK_CONTROL: u32 = 0x11;
 
+/// Stores information about a correction for potential undo.
+///
+/// The undo buffer retains corrections for 5 seconds, allowing users
+/// to press Ctrl+Z immediately after an unwanted correction.
 #[derive(Debug, Clone)]
 struct UndoState {
+    /// The original (misspelled) word before correction.
     original_word: String,
+    /// The word that replaced the original.
     corrected_word: String,
+    /// When the correction occurred (for timeout calculation).
     timestamp: Instant,
 }
 
+/// The main autocorrection engine.
+///
+/// Tracks keystrokes to build words, detects word boundaries, and
+/// triggers corrections using the SymSpell algorithm. Manages the
+/// undo buffer for reverting unwanted corrections.
 pub struct Corrector {
+    /// Dictionary containing word frequencies.
     dictionary: Dictionary,
+    /// SymSpell instance for fast spell correction.
     symspell: SymSpell,
+    /// The word currently being typed (since last word boundary).
     current_word: String,
+    /// Whether autocorrection is enabled.
     enabled: bool,
+    /// Maximum edit distance for correction lookup.
+    max_edit_distance: i32,
+    /// Timeout window for undo after a correction.
+    undo_timeout_seconds: u64,
+    /// Stores the last correction for potential undo.
     undo_buffer: Option<UndoState>,
+    /// Tracks if Ctrl is currently held (for undo detection).
     ctrl_pressed: bool,
+    /// When the last correction occurred (for undo timeout).
     last_correction_time: Option<Instant>,
 }
 
 impl Corrector {
+    /// Create a new `Corrector` with default settings.
+    ///
+    /// Initializes the SymSpell algorithm with a max edit distance of 2
+    /// and an empty trigram model for context-based scoring.
+    ///
+    /// # Example
+    /// ```rust
+    /// let corrector = Corrector::new();
+    /// ```
     pub fn new() -> Self {
-        let mut symspell = SymSpell::new(2); // Default max edit distance of 2
+        Self::new_with_settings(2, true, 5)
+    }
+
+    /// Create a new `Corrector` using runtime configuration.
+    pub fn new_with_config(config: &crate::config::Config) -> Self {
+        Self::new_with_settings(
+            config.max_edit_distance,
+            config.enabled_by_default,
+            config.undo_timeout_seconds,
+        )
+    }
+
+    fn new_with_settings(max_edit_distance: i32, enabled: bool, undo_timeout_seconds: u64) -> Self {
+        let max_edit_distance = max_edit_distance.max(0);
+        let mut symspell = SymSpell::new(max_edit_distance);
         symspell.trigram_model = Some(TrigramModel::new());
 
         Self {
             dictionary: Dictionary::new(),
             current_word: String::new(),
-            enabled: true,
+            enabled,
+            max_edit_distance,
+            undo_timeout_seconds,
             undo_buffer: None,
             ctrl_pressed: false,
             last_correction_time: None,
         }
     }
     
-    /// Initialize the corrector (load dictionaries)
+    /// Initialize the corrector by loading dictionaries.
+    ///
+    /// Loads both the built-in dictionary and the user's personal dictionary.
+    /// Must be called before the corrector can make suggestions.
+    ///
+    /// # Errors
+    /// Returns an error if dictionary files cannot be read or parsed.
     pub fn initialize(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.dictionary.load()?;
+        self.initialize_with_dictionary(None)
+    }
+
+    /// Initialize the corrector with an optional custom built-in dictionary path.
+    pub fn initialize_with_dictionary(
+        &mut self,
+        dictionary_path: Option<&Path>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.dictionary.load_from_path(dictionary_path)?;
         Ok(())
     }
-    
-    /// Check if autocorrect is enabled
+
+    /// Explicitly set whether autocorrection is enabled.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    /// Check if autocorrection is currently enabled.
+    ///
+    /// When disabled, keystrokes are passed through without processing.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
-    
-    /// Toggle enabled state
+
+    /// Toggle autocorrection on/off.
+    ///
+    /// Changes the enabled state and updates the system tray tooltip.
     pub fn toggle_enabled(&mut self) {
         self.enabled = !self.enabled;
     }
-    
-    /// Handle a key press - returns true if the key should be suppressed
+
+    /// Process a keystroke from the keyboard hook.
+    ///
+    /// This is the main entry point for keyboard input. It:
+    /// - Tracks Ctrl key state for undo detection
+    /// - Builds words from letter keystrokes
+    /// - Detects word boundaries (space, punctuation, enter)
+    /// - Triggers corrections at word boundaries
+    ///
+    /// # Arguments
+    /// * `vk_code` - The virtual key code from Windows
+    ///
+    /// # Returns
+    /// * `true` - The key was consumed (correction made, suppress the key)
+    /// * `false` - The key should be passed through to the application
     pub fn handle_key(&mut self, vk_code: u32) -> bool {
         // Track Ctrl key state
         if vk_code == VK_CONTROL {
@@ -98,7 +212,13 @@ impl Corrector {
         }
     }
     
-    /// Handle a letter being typed
+    /// Handle a letter key being pressed.
+    ///
+    /// Adds the character to the current word being built. Handles
+    /// uppercase/lowercase based on Shift and Caps Lock state.
+    ///
+    /// # Arguments
+    /// * `vk_code` - Virtual key code (A-Z range expected)
     fn handle_letter(&mut self, vk_code: u32) {
         // Clear undo buffer if we've moved past the correction
         if self.undo_buffer.is_some() {
@@ -120,14 +240,22 @@ impl Corrector {
         }
     }
     
-    /// Handle backspace key
+    /// Handle the Backspace key.
+    ///
+    /// Removes the last character from the current word being built.
     fn handle_backspace(&mut self) {
         if !self.current_word.is_empty() {
             self.current_word.pop();
         }
     }
-    
-    /// Handle end of word (space, punctuation, enter)
+
+    /// Handle word boundary (space, punctuation, or enter).
+    ///
+    /// Called when the user has finished typing a word. This method:
+    /// 1. Checks if the word exists in the dictionary
+    /// 2. If not, finds the best correction using SymSpell
+    /// 3. Replaces the misspelled word with the correction
+    /// 4. Stores the original word for potential undo
     fn handle_word_end(&mut self) {
         if self.current_word.is_empty() {
             return;
@@ -137,7 +265,7 @@ impl Corrector {
         let word_lower = self.current_word.to_lowercase();
         
         let context = self.previous_two_words();
-        let suggestions = self.symspell.lookup(&word_lower, 2, context);
+        let suggestions = self.symspell.lookup(&word_lower, self.max_edit_distance, context);
         if let Some(correction) = suggestions.first() {
             // Store undo state
             self.undo_buffer = Some(UndoState {
@@ -157,7 +285,16 @@ impl Corrector {
         self.current_word.clear();
     }
     
-    /// Replace the current word with corrected version
+    /// Replace the current word with a corrected version.
+    ///
+    /// Simulates backspace keystrokes to delete the misspelled word,
+    /// then types the corrected word character by character.
+    ///
+    /// # Arguments
+    /// * `correction` - The corrected word to type
+    ///
+    /// # Safety
+    /// This function uses `unsafe` to call Windows API for simulating keystrokes.
     fn replace_word(&self, correction: &str) {
         unsafe {
             // Simulate backspaces to delete the misspelled word
@@ -175,11 +312,22 @@ impl Corrector {
         }
     }
     
-    /// Handle undo (Ctrl+Z after correction)
+    /// Undo the last correction.
+    ///
+    /// Called when Ctrl+Z is pressed within 5 seconds of a correction.
+    /// Restores the original word by deleting the correction and retyping
+    /// the original misspelled word.
+    ///
+    /// # Returns
+    /// * `true` - The undo was performed (suppress the Ctrl+Z keystroke)
+    /// * `false` - No undo available or timeout exceeded
+    ///
+    /// # Safety
+    /// This function uses `unsafe` to call Windows API for simulating keystrokes.
     fn handle_undo(&mut self) -> bool {
         if let Some(undo) = &self.undo_buffer {
             // Only undo if it was recent (within 5 seconds)
-            if undo.timestamp.elapsed().as_secs() < 5 {
+            if undo.timestamp.elapsed().as_secs() < self.undo_timeout_seconds {
                 // Delete the corrected word
                 let correction_len = undo.corrected_word.chars().count();
                 unsafe {
@@ -204,7 +352,17 @@ impl Corrector {
         false
     }
     
-    /// Send a key press/release
+    /// Send a virtual key press or release event.
+    ///
+    /// Uses Windows `SendInput` API to simulate keyboard input.
+    /// Includes a 1ms delay to ensure the key is processed.
+    ///
+    /// # Arguments
+    /// * `vk` - Virtual key code
+    /// * `key_down` - `true` for key press, `false` for key release
+    ///
+    /// # Safety
+    /// This is an `unsafe` function because it calls Windows API.
     unsafe fn send_key(vk: u16, key_down: bool) {
         let mut input = INPUT {
             type_: INPUT_KEYBOARD,
@@ -225,7 +383,16 @@ impl Corrector {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     
-    /// Send a character (handles Unicode)
+    /// Send a character using simulated keystrokes.
+    ///
+    /// For ASCII letters, simulates the appropriate key with optional Shift.
+    /// For other characters, uses Unicode input via `KEYEVENTF_UNICODE`.
+    ///
+    /// # Arguments
+    /// * `ch` - The character to type
+    ///
+    /// # Safety
+    /// This is an `unsafe` function because it calls Windows API.
     unsafe fn send_char(ch: char) {
         // For ASCII letters, use VK codes
         if ch.is_ascii_alphabetic() {
@@ -271,12 +438,12 @@ impl Corrector {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     
-    /// Check if a virtual key code is a letter
+    /// Check if a virtual key code represents a letter (A-Z).
     fn is_letter(vk_code: u32) -> bool {
         (0x41..=0x5A).contains(&vk_code) // A-Z
     }
-    
-    /// Check if a virtual key code is punctuation that ends a word
+
+    /// Check if a virtual key code represents word-ending punctuation.
     fn is_punctuation(vk_code: u32) -> bool {
         matches!(vk_code,
             0xBC | // Comma
@@ -291,8 +458,14 @@ impl Corrector {
             0xBB   // Equals
         )
     }
-    
-    /// Convert virtual key code to character
+
+    /// Convert a virtual key code to a character.
+    ///
+    /// Only handles A-Z keys. Returns `None` for other keys.
+    ///
+    /// # Arguments
+    /// * `vk_code` - Virtual key code (expected to be in A-Z range)
+    /// * `uppercase` - Whether to return uppercase or lowercase
     fn vk_to_char(vk_code: u32, uppercase: bool) -> Option<char> {
         if (0x41..=0x5A).contains(&vk_code) {
             let ch = (vk_code - 0x41 + b'a' as u32) as u8 as char;

@@ -1,29 +1,102 @@
-// dictionary.rs - Dictionary loading and management
-// Handles both built-in dictionary and personal user dictionary
+//! Dictionary loading and management for the autocorrection system.
+//!
+//! This module handles loading and managing two types of dictionaries:
+//! - **Built-in dictionary**: A comprehensive list of common English words with frequencies
+//! - **Personal dictionary**: User-defined words that should never be corrected
+//!
+//! # Dictionary Format
+//!
+//! Dictionary files use a simple text format:
+//! ```text
+//! # Comments start with #
+//! word frequency
+//! the 1000000
+//! be 500000
+//! hello 15000
+//! ```
+//!
+//! If frequency is omitted, it defaults to 1.
+//!
+//! # Fallback Dictionary
+//!
+//! If no dictionary file is found at `dictionary/words.txt`, a built-in
+//! fallback dictionary of common English words is used. This ensures the
+//! application works even without external dictionary files.
+//!
+//! # Personal Dictionary
+//!
+//! Personal words are stored in `%APPDATA%/Autocorrect/personal_dictionary.txt`.
+//! These words are given very high frequency (1,000,000) to ensure they are
+//! always preferred over similar dictionary words.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use crate::symspell::SymSpell;
 
+#[cfg(feature = "embed-dictionary")]
+const EMBEDDED_DICTIONARY: &str = include_str!("../dictionary/words.txt");
+
+#[cfg(not(feature = "embed-dictionary"))]
+const EMBEDDED_DICTIONARY: &str = option_env!("AUTOCORRECT_EMBEDDED_DICTIONARY").unwrap_or("");
+
+/// Manages dictionary loading and word storage.
+///
+/// The dictionary system consists of:
+/// - A SymSpell instance containing all words and their frequencies
+/// - A path to the personal dictionary file
 pub struct Dictionary {
+    /// The SymSpell instance containing all loaded words.
     symspell: SymSpell,
+    /// Path to the user's personal dictionary file.
     personal_dict_path: PathBuf,
 }
 
 impl Dictionary {
-    /// Create a new dictionary with max edit distance of 2
+    /// Create a new dictionary instance.
+    ///
+    /// Initializes a SymSpell with max edit distance of 2 and determines
+    /// the path for the personal dictionary file.
+    ///
+    /// # Example
+    /// ```rust
+    /// let dict = Dictionary::new();
+    /// ```
     pub fn new() -> Self {
         Self {
             symspell: SymSpell::new(2),
             personal_dict_path: Self::get_personal_dict_path(),
         }
     }
-    
-    /// Load dictionaries from files
+
+    /// Load both built-in and personal dictionaries.
+    ///
+    /// This method:
+    /// 1. Loads the built-in dictionary from `dictionary/words.txt` (or uses fallback)
+    /// 2. Loads the personal dictionary from the user's AppData folder
+    /// 3. Creates an empty personal dictionary if it doesn't exist
+    ///
+    /// # Errors
+    /// Returns an error if dictionary files cannot be read.
+    ///
+    /// # Example
+    /// ```rust
+    /// let mut dict = Dictionary::new();
+    /// dict.load()?;
+    /// ```
     pub fn load(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.load_from_path(None)
+    }
+
+    /// Load both built-in and personal dictionaries using an optional custom path.
+    ///
+    /// If `dictionary_path` is provided, that file is used as the built-in dictionary.
+    pub fn load_from_path(
+        &mut self,
+        dictionary_path: Option<&Path>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Load built-in dictionary
-        self.load_builtin_dictionary()?;
+        self.load_builtin_dictionary(dictionary_path)?;
         
         // Load personal dictionary if it exists
         if self.personal_dict_path.exists() {
@@ -37,48 +110,98 @@ impl Dictionary {
         Ok(())
     }
     
-    /// Load the built-in dictionary
-    fn load_builtin_dictionary(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Try to load from dictionary/words.txt
-        let dict_path = Path::new("dictionary/words.txt");
-        
-        if !dict_path.exists() {
-            // If file doesn't exist, use embedded fallback dictionary
+    /// Load the built-in dictionary from file or use fallback.
+    ///
+    /// Attempts to load the compile-time embedded dictionary. If it is unavailable
+    /// or contains no valid words, falls back to a hardcoded list of common English
+    /// words.
+    ///
+    /// # Errors
+    /// Returns an error if fallback dictionary loading fails.
+    fn load_builtin_dictionary(
+        &mut self,
+        dictionary_path: Option<&Path>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(dict_path) = dictionary_path {
+            return self.load_dictionary_file(dict_path);
+        }
+
+        if EMBEDDED_DICTIONARY.trim().is_empty() {
+            println!("Embedded dictionary unavailable; using fallback dictionary");
             return self.load_fallback_dictionary();
         }
-        
-        let file = File::open(dict_path)?;
-        let reader = BufReader::new(file);
-        
-        for line in reader.lines() {
-            let line = line?;
+
+        let mut loaded_words = 0usize;
+        for line in EMBEDDED_DICTIONARY.lines() {
             let line = line.trim();
-            
+
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            
+
             // Format: word frequency
             // or just: word (default frequency = 1)
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.is_empty() {
                 continue;
             }
-            
+
             let word = parts[0].to_lowercase();
             let frequency = if parts.len() > 1 {
                 parts[1].parse::<u64>().unwrap_or(1)
             } else {
                 1
             };
-            
+
+            self.symspell.insert(word, frequency);
+            loaded_words += 1;
+        }
+
+        if loaded_words == 0 {
+            println!("Embedded dictionary empty or invalid; using fallback dictionary");
+            return self.load_fallback_dictionary();
+        }
+
+        println!("Loaded embedded dictionary with {} words", loaded_words);
+        Ok(())
+    }
+
+    /// Load a dictionary from a file path.
+    fn load_dictionary_file(&mut self, dict_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let file = File::open(dict_path)?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            let line = line.trim();
+
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.is_empty() {
+                continue;
+            }
+
+            let word = parts[0].to_lowercase();
+            let frequency = if parts.len() > 1 {
+                parts[1].parse::<u64>().unwrap_or(1)
+            } else {
+                1
+            };
+
             self.symspell.insert(word, frequency);
         }
-        
+
+        println!("Loaded custom dictionary from {}", dict_path.display());
         Ok(())
     }
     
-    /// Load a small fallback dictionary if no dictionary file exists
+    /// Load a built-in fallback dictionary of common English words.
+    ///
+    /// Used when no external dictionary file is available. Contains a curated
+    /// list of the most common English words with realistic frequency data.
     fn load_fallback_dictionary(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Common English words with frequencies
         let common_words = [
@@ -123,7 +246,14 @@ impl Dictionary {
         Ok(())
     }
     
-    /// Load personal dictionary
+    /// Load the user's personal dictionary.
+    ///
+    /// Reads words from the personal dictionary file and adds them to
+    /// the SymSpell with high frequency (1,000,000) to ensure they are
+    /// preferred over similar dictionary words.
+    ///
+    /// # Errors
+    /// Returns an error if the personal dictionary file cannot be read.
     fn load_personal_dictionary(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let file = File::open(&self.personal_dict_path)?;
         let reader = BufReader::new(file);
@@ -144,7 +274,13 @@ impl Dictionary {
         Ok(())
     }
     
-    /// Create an empty personal dictionary file
+    /// Create an empty personal dictionary file with a template.
+    ///
+    /// Creates the file at the personal dictionary path with instructions
+    /// for the user on how to add words.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be created.
     fn create_personal_dictionary(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut file = File::create(&self.personal_dict_path)?;
         writeln!(file, "# Personal Dictionary")?;
@@ -154,7 +290,11 @@ impl Dictionary {
         Ok(())
     }
     
-    /// Get the path for personal dictionary
+    /// Get the path for the personal dictionary file.
+    ///
+    /// Returns `%APPDATA%/Autocorrect/personal_dictionary.txt` on Windows,
+    /// or falls back to `personal_dictionary.txt` in the current directory
+    /// if the APPDATA environment variable is not set.
     fn get_personal_dict_path() -> PathBuf {
         // Try to use user's AppData folder
         if let Ok(appdata) = std::env::var("APPDATA") {
@@ -174,7 +314,16 @@ impl Dictionary {
         }
     }
     
-    /// Add a word to personal dictionary
+    /// Add a word to the personal dictionary.
+    ///
+    /// Adds the word to both the SymSpell (with high frequency) and
+    /// appends it to the personal dictionary file for persistence.
+    ///
+    /// # Arguments
+    /// * `word` - The word to add
+    ///
+    /// # Errors
+    /// Returns an error if the personal dictionary file cannot be written.
     pub fn add_personal_word(&mut self, word: &str) -> Result<(), Box<dyn std::error::Error>> {
         let word = word.trim().to_lowercase();
         
@@ -192,12 +341,32 @@ impl Dictionary {
         Ok(())
     }
     
-    /// Look up corrections for a word
+    /// Look up spelling corrections for a word.
+    ///
+    /// Returns a list of suggestions sorted by edit distance (ascending)
+    /// then frequency (descending).
+    ///
+    /// # Arguments
+    /// * `word` - The potentially misspelled word
+    ///
+    /// # Returns
+    /// A vector of `SuggestItem` containing suggestions.
     pub fn lookup(&self, word: &str) -> Vec<crate::symspell::SuggestItem> {
-        self.symspell.lookup(word, 2)
+        self.symspell.lookup(word, 2, None)
     }
-    
-    /// Get the best correction for a word (if any)
+
+    /// Get the best correction for a word, if one exists.
+    ///
+    /// Returns `Some(correction)` only if:
+    /// - There are suggestions
+    /// - The top suggestion is different from the input
+    /// - The edit distance is <= 2
+    ///
+    /// # Arguments
+    /// * `word` - The word to check
+    ///
+    /// # Returns
+    /// `Some(corrected_word)` if a correction is available, `None` otherwise.
     pub fn get_correction(&self, word: &str) -> Option<String> {
         let suggestions = self.lookup(word);
         

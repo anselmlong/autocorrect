@@ -1,13 +1,45 @@
-// symspell.rs - SymSpell algorithm implementation for fast spell correction
-// Based on the SymSpell algorithm with edit distance up to 2
+//! SymSpell algorithm implementation for fast spell correction.
+//!
+//! This module implements the SymSpell (Symmetric Delete) algorithm, which provides
+//! lightning-fast spell correction by pre-computing delete variations of dictionary words.
+//!
+//! # Algorithm Overview
+//!
+//! SymSpell achieves O(1) lookup time by trading space for speed:
+//!
+//! ```text
+//! Pre-computation phase (insert):
+//!   "hello" → "ello", "hllo", "helo", "hell" (all 1-char deletes)
+//!   Each delete maps back to the original word
+//!
+//! Lookup phase:
+//!   Input: "helo"
+//!   Generate deletes: "helo" → "elo", "hlo", "heo", "hel"
+//!   Check delete dictionary for matches
+//!   Calculate actual edit distance for candidates
+//!   Return best matches
+//! ```
+//!
+//! # Performance
+//!
+//! - Insert: O(n * max_edit_distance) - generates all delete combinations
+//! - Lookup: O(1) average - constant time delete dictionary lookup
+//! - Space: O(n * edits) - stores delete mappings
+//!
+//! Supports Damerau-Levenshtein distance (includes transpositions).
 
 use ahash::{AHashMap, AHashSet};
 use std::cmp::Ordering;
+use crate::trigram::TrigramModel;
 
+/// A spelling suggestion with edit distance and frequency information.
 #[derive(Debug, Clone)]
 pub struct SuggestItem {
+    /// The suggested (corrected) word.
     pub term: String,
+    /// Edit distance from the input word (Damerau-Levenshtein).
     pub distance: i32,
+    /// Frequency of this word in the dictionary (higher = more common).
     pub frequency: u64,
 }
 
@@ -17,18 +49,35 @@ impl SuggestItem {
     }
 }
 
-use crate::trigram::TrigramModel;
-
+/// SymSpell spell checker with pre-computed delete index.
+///
+/// Maintains two data structures:
+/// - `words`: Maps correct words to their frequencies
+/// - `deletes`: Maps delete variations to the original words that generate them
+///
+/// The delete index enables constant-time candidate lookup.
 pub struct SymSpell {
-    // Main dictionary: word -> frequency
+    /// Main dictionary: word -> frequency.
     words: AHashMap<String, u64>,
-    // Delete dictionary: delete_word -> list of original words
+    /// Delete index: delete_variation -> list of source words.
+    /// For example, "ell" maps to ["hello", "jelly", "tell", ...].
     deletes: AHashMap<String, Vec<String>>,
+    /// Maximum edit distance to consider for corrections.
     max_edit_distance: i32,
-    trigram_model: Option<TrigramModel>,
+    /// Optional trigram model for context-aware scoring.
+    pub trigram_model: Option<TrigramModel>,
 }
 
 impl SymSpell {
+    /// Create a new SymSpell instance with the specified max edit distance.
+    ///
+    /// # Arguments
+    /// * `max_edit_distance` - Maximum edit distance to consider (typically 1 or 2)
+    ///
+    /// # Example
+    /// ```rust
+    /// let symspell = SymSpell::new(2); // Allow up to 2 edits
+    /// ```
     pub fn new(max_edit_distance: i32) -> Self {
         Self {
             words: AHashMap::new(),
@@ -37,12 +86,26 @@ impl SymSpell {
             max_edit_distance,
         }
     }
-    
-    /// Add a word to the dictionary with its frequency
+
+    /// Add a word to the dictionary with its frequency.
+    ///
+    /// Stores the word and generates all delete variations up to
+    /// `max_edit_distance`. These deletes are added to the index
+    /// for fast lookup.
+    ///
+    /// # Arguments
+    /// * `word` - The word to add
+    /// * `frequency` - How often this word appears (higher = more common)
+    ///
+    /// # Example
+    /// ```rust
+    /// let mut symspell = SymSpell::new(2);
+    /// symspell.insert("hello".to_string(), 1000);
+    /// ```
     pub fn insert(&mut self, word: String, frequency: u64) {
         // Store the word
         self.words.insert(word.clone(), frequency);
-        
+
         // Generate deletes for this word
         let deletes = Self::generate_deletes(&word, self.max_edit_distance);
         for delete in deletes {
@@ -51,8 +114,25 @@ impl SymSpell {
                 .push(word.clone());
         }
     }
-    
-    /// Lookup suggestions for a word
+
+    /// Find spelling suggestions for an input word.
+    ///
+    /// Uses the pre-computed delete index for fast candidate generation,
+    /// then calculates actual edit distance for verification.
+    ///
+    /// # Arguments
+    /// * `input` - The potentially misspelled word
+    /// * `max_edit_distance` - Maximum edit distance to consider for this lookup
+    /// * `context` - Optional tuple of (previous_word, word_before_that) for context scoring
+    ///
+    /// # Returns
+    /// A vector of suggestions sorted by edit distance (ascending) then frequency (descending).
+    ///
+    /// # Example
+    /// ```rust
+    /// let suggestions = symspell.lookup("helo", 2, None);
+    /// // Returns "hello" with distance 1
+    /// ```
     pub fn lookup(&self, input: &str, max_edit_distance: i32, context: Option<(&str, &str)>) -> Vec<SuggestItem> {
         let mut suggestions = Vec::new();
         let mut considered = AHashSet::new();
@@ -113,7 +193,24 @@ impl SymSpell {
         suggestions
     }
     
-    /// Generate all delete strings within max_edit_distance
+    /// Generate all possible delete variations of a word.
+    ///
+    /// Creates all strings that can be formed by deleting up to
+    /// `max_edit_distance` characters from the word. Uses BFS to
+    /// generate deletes at multiple edit distances.
+    ///
+    /// # Arguments
+    /// * `word` - The source word
+    /// * `max_edit_distance` - Maximum number of characters to delete
+    ///
+    /// # Returns
+    /// Vector of all unique delete variations (excluding the original word).
+    ///
+    /// # Example
+    /// ```rust
+    /// let deletes = SymSpell::generate_deletes("hello", 1);
+    /// // Returns: ["ello", "hllo", "helo", "hell"]
+    /// ```
     fn generate_deletes(word: &str, max_edit_distance: i32) -> Vec<String> {
         let mut deletes = Vec::new();
         let mut queue = vec![(word.to_string(), 0)];
@@ -143,7 +240,30 @@ impl SymSpell {
         deletes
     }
     
-    /// Calculate Damerau-Levenshtein distance with early termination
+    /// Calculate the Damerau-Levenshtein edit distance between two strings.
+    ///
+    /// This is an optimized implementation with early termination. It supports:
+    /// - Insertions (abc → abcd)
+    /// - Deletions (abcd → abc)
+    /// - Substitutions (abc → abd)
+    /// - Transpositions (abc → acb) - the "Damerau" extension
+    ///
+    /// The algorithm uses dynamic programming with a full matrix and terminates
+    /// early if the minimum distance in any row exceeds `max_distance`.
+    ///
+    /// # Arguments
+    /// * `source` - The source string
+    /// * `target` - The target string
+    /// * `max_distance` - Maximum distance to consider; returns -1 if exceeded
+    ///
+    /// # Returns
+    /// The edit distance, or -1 if it exceeds `max_distance`.
+    ///
+    /// # Example
+    /// ```rust
+    /// let dist = SymSpell::damerau_levenshtein_distance("hello", "helo", 2);
+    /// assert_eq!(dist, 1); // One transposition
+    /// ```
     fn damerau_levenshtein_distance(source: &str, target: &str, max_distance: i32) -> i32 {
         let source_chars: Vec<char> = source.chars().collect();
         let target_chars: Vec<char> = target.chars().collect();
@@ -207,7 +327,10 @@ impl SymSpell {
         }
     }
     
-    /// Get word count
+    /// Get the number of words in the dictionary.
+    ///
+    /// # Returns
+    /// The count of unique words stored in the dictionary.
     pub fn word_count(&self) -> usize {
         self.words.len()
     }
