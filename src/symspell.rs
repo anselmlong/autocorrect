@@ -17,18 +17,22 @@ impl SuggestItem {
     }
 }
 
+use crate::trigram::TrigramModel;
+
 pub struct SymSpell {
     // Main dictionary: word -> frequency
     words: AHashMap<String, u64>,
     // Delete dictionary: delete_word -> list of original words
     deletes: AHashMap<String, Vec<String>>,
     max_edit_distance: i32,
+    trigram_model: Option<TrigramModel>,
 }
 
 impl SymSpell {
     pub fn new(max_edit_distance: i32) -> Self {
         Self {
             words: AHashMap::new(),
+            trigram_model: None,
             deletes: AHashMap::new(),
             max_edit_distance,
         }
@@ -49,7 +53,7 @@ impl SymSpell {
     }
     
     /// Lookup suggestions for a word
-    pub fn lookup(&self, input: &str, max_edit_distance: i32) -> Vec<SuggestItem> {
+    pub fn lookup(&self, input: &str, max_edit_distance: i32, context: Option<(&str, &str)>) -> Vec<SuggestItem> {
         let mut suggestions = Vec::new();
         let mut considered = AHashSet::new();
         
@@ -90,6 +94,15 @@ impl SymSpell {
         }
         
         // Sort by distance first, then by frequency
+        if let Some((prev_prev, prev)) = context {
+            if let Some(trigram_model) = &self.trigram_model {
+                for suggestion in &mut suggestions {
+                    let trigram_score = trigram_model.trigram_probability(&suggestion.term, prev, prev_prev);
+                    suggestion.frequency = (suggestion.frequency as f64 * trigram_score) as u64;
+                }
+            }
+        }
+
         suggestions.sort_by(|a, b| {
             match a.distance.cmp(&b.distance) {
                 Ordering::Equal => b.frequency.cmp(&a.frequency),

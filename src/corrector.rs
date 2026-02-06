@@ -2,6 +2,7 @@
 // Handles keyboard input, builds words, triggers corrections, and manages undo
 
 use crate::dictionary::Dictionary;
+use crate::symspell::SymSpell;
 use std::time::Instant;
 use winapi::um::winuser::*;
 
@@ -19,6 +20,7 @@ struct UndoState {
 
 pub struct Corrector {
     dictionary: Dictionary,
+    symspell: SymSpell,
     current_word: String,
     enabled: bool,
     undo_buffer: Option<UndoState>,
@@ -28,6 +30,9 @@ pub struct Corrector {
 
 impl Corrector {
     pub fn new() -> Self {
+        let mut symspell = SymSpell::new(2); // Default max edit distance of 2
+        symspell.trigram_model = Some(TrigramModel::new());
+
         Self {
             dictionary: Dictionary::new(),
             current_word: String::new(),
@@ -131,7 +136,9 @@ impl Corrector {
         // Check if word needs correction
         let word_lower = self.current_word.to_lowercase();
         
-        if let Some(correction) = self.dictionary.get_correction(&word_lower) {
+        let context = self.previous_two_words();
+        let suggestions = self.symspell.lookup(&word_lower, 2, context);
+        if let Some(correction) = suggestions.first() {
             // Store undo state
             self.undo_buffer = Some(UndoState {
                 original_word: self.current_word.clone(),
