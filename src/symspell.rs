@@ -28,9 +28,9 @@
 //!
 //! Supports Damerau-Levenshtein distance (includes transpositions).
 
+use crate::trigram::TrigramModel;
 use ahash::{AHashMap, AHashSet};
 use std::cmp::Ordering;
-use crate::trigram::TrigramModel;
 
 /// A spelling suggestion with edit distance and frequency information.
 #[derive(Debug, Clone)]
@@ -45,7 +45,11 @@ pub struct SuggestItem {
 
 impl SuggestItem {
     fn new(term: String, distance: i32, frequency: u64) -> Self {
-        Self { term, distance, frequency }
+        Self {
+            term,
+            distance,
+            frequency,
+        }
     }
 }
 
@@ -109,7 +113,8 @@ impl SymSpell {
         // Generate deletes for this word
         let deletes = Self::generate_deletes(&word, self.max_edit_distance);
         for delete in deletes {
-            self.deletes.entry(delete)
+            self.deletes
+                .entry(delete)
                 .or_insert_with(Vec::new)
                 .push(word.clone());
         }
@@ -133,10 +138,15 @@ impl SymSpell {
     /// let suggestions = symspell.lookup("helo", 2, None);
     /// // Returns "hello" with distance 1
     /// ```
-    pub fn lookup(&self, input: &str, max_edit_distance: i32, context: Option<(&str, &str)>) -> Vec<SuggestItem> {
+    pub fn lookup(
+        &self,
+        input: &str,
+        max_edit_distance: i32,
+        context: Option<(&str, &str)>,
+    ) -> Vec<SuggestItem> {
         let mut suggestions = Vec::new();
         let mut considered = AHashSet::new();
-        
+
         // Check if input is in dictionary
         if let Some(&frequency) = self.words.get(input) {
             suggestions.push(SuggestItem::new(input.to_string(), 0, frequency));
@@ -144,12 +154,12 @@ impl SymSpell {
                 return suggestions;
             }
         }
-        
+
         considered.insert(input.to_string());
-        
+
         // Generate deletes for input
         let input_deletes = Self::generate_deletes(input, max_edit_distance);
-        
+
         for delete in input_deletes {
             if let Some(originals) = self.deletes.get(&delete) {
                 for original in originals {
@@ -157,42 +167,42 @@ impl SymSpell {
                         continue;
                     }
                     considered.insert(original.clone());
-                    
-                    let distance = Self::damerau_levenshtein_distance(input, original, max_edit_distance);
-                    
+
+                    let distance =
+                        Self::damerau_levenshtein_distance(input, original, max_edit_distance);
+
                     if distance >= 0 && distance <= max_edit_distance {
                         if let Some(&frequency) = self.words.get(original) {
                             suggestions.push(SuggestItem::new(
                                 original.clone(),
                                 distance,
-                                frequency
+                                frequency,
                             ));
                         }
                     }
                 }
             }
         }
-        
+
         // Sort by distance first, then by frequency
         if let Some((prev_prev, prev)) = context {
             if let Some(trigram_model) = &self.trigram_model {
                 for suggestion in &mut suggestions {
-                    let trigram_score = trigram_model.trigram_probability(&suggestion.term, prev, prev_prev);
+                    let trigram_score =
+                        trigram_model.trigram_probability(&suggestion.term, prev, prev_prev);
                     suggestion.frequency = (suggestion.frequency as f64 * trigram_score) as u64;
                 }
             }
         }
 
-        suggestions.sort_by(|a, b| {
-            match a.distance.cmp(&b.distance) {
-                Ordering::Equal => b.frequency.cmp(&a.frequency),
-                other => other,
-            }
+        suggestions.sort_by(|a, b| match a.distance.cmp(&b.distance) {
+            Ordering::Equal => b.frequency.cmp(&a.frequency),
+            other => other,
         });
-        
+
         suggestions
     }
-    
+
     /// Generate all possible delete variations of a word.
     ///
     /// Creates all strings that can be formed by deleting up to
@@ -216,7 +226,7 @@ impl SymSpell {
         let mut queue = vec![(word.to_string(), 0)];
         let mut seen = AHashSet::new();
         seen.insert(word.to_string());
-        
+
         while let Some((current, depth)) = queue.pop() {
             if depth < max_edit_distance {
                 let chars: Vec<char> = current.chars().collect();
@@ -227,7 +237,7 @@ impl SymSpell {
                             new_word.push(c);
                         }
                     }
-                    
+
                     if !seen.contains(&new_word) {
                         seen.insert(new_word.clone());
                         deletes.push(new_word.clone());
@@ -236,10 +246,10 @@ impl SymSpell {
                 }
             }
         }
-        
+
         deletes
     }
-    
+
     /// Calculate the Damerau-Levenshtein edit distance between two strings.
     ///
     /// This is an optimized implementation with early termination. It supports:
@@ -269,18 +279,26 @@ impl SymSpell {
         let target_chars: Vec<char> = target.chars().collect();
         let len1 = source_chars.len();
         let len2 = target_chars.len();
-        
+
         // Quick checks
         if len1 == 0 {
-            return if len2 as i32 <= max_distance { len2 as i32 } else { -1 };
+            return if len2 as i32 <= max_distance {
+                len2 as i32
+            } else {
+                -1
+            };
         }
         if len2 == 0 {
-            return if len1 as i32 <= max_distance { len1 as i32 } else { -1 };
+            return if len1 as i32 <= max_distance {
+                len1 as i32
+            } else {
+                -1
+            };
         }
         if (len1 as i32 - len2 as i32).abs() > max_distance {
             return -1;
         }
-        
+
         // Initialize matrix
         let mut matrix = vec![vec![0; len2 + 1]; len1 + 1];
         for i in 0..=len1 {
@@ -289,36 +307,42 @@ impl SymSpell {
         for j in 0..=len2 {
             matrix[0][j] = j;
         }
-        
+
         // Calculate distances
         for i in 1..=len1 {
             let mut min_in_row = usize::MAX;
-            
+
             for j in 1..=len2 {
-                let cost = if source_chars[i - 1] == target_chars[j - 1] { 0 } else { 1 };
-                
+                let cost = if source_chars[i - 1] == target_chars[j - 1] {
+                    0
+                } else {
+                    1
+                };
+
                 let deletion = matrix[i - 1][j] + 1;
                 let insertion = matrix[i][j - 1] + 1;
                 let substitution = matrix[i - 1][j - 1] + cost;
-                
+
                 matrix[i][j] = deletion.min(insertion).min(substitution);
-                
+
                 // Damerau: transposition
-                if i > 1 && j > 1 
-                    && source_chars[i - 1] == target_chars[j - 2] 
-                    && source_chars[i - 2] == target_chars[j - 1] {
+                if i > 1
+                    && j > 1
+                    && source_chars[i - 1] == target_chars[j - 2]
+                    && source_chars[i - 2] == target_chars[j - 1]
+                {
                     matrix[i][j] = matrix[i][j].min(matrix[i - 2][j - 2] + cost);
                 }
-                
+
                 min_in_row = min_in_row.min(matrix[i][j]);
             }
-            
+
             // Early termination: if the minimum in this row exceeds max_distance, we can stop
             if min_in_row > max_distance as usize {
                 return -1;
             }
         }
-        
+
         let distance = matrix[len1][len2] as i32;
         if distance <= max_distance {
             distance
@@ -326,7 +350,7 @@ impl SymSpell {
             -1
         }
     }
-    
+
     /// Get the number of words in the dictionary.
     ///
     /// # Returns
@@ -339,34 +363,34 @@ impl SymSpell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_basic_lookup() {
         let mut symspell = SymSpell::new(2);
         symspell.insert("hello".to_string(), 100);
         symspell.insert("world".to_string(), 50);
-        
-        let suggestions = symspell.lookup("hello", 2);
+
+        let suggestions = symspell.lookup("hello", 2, None);
         assert_eq!(suggestions[0].term, "hello");
         assert_eq!(suggestions[0].distance, 0);
     }
-    
+
     #[test]
     fn test_correction() {
         let mut symspell = SymSpell::new(2);
         symspell.insert("hello".to_string(), 100);
-        
-        let suggestions = symspell.lookup("helo", 2);
+
+        let suggestions = symspell.lookup("helo", 2, None);
         assert!(!suggestions.is_empty());
         assert_eq!(suggestions[0].term, "hello");
         assert_eq!(suggestions[0].distance, 1);
     }
-    
+
     #[test]
     fn test_distance() {
         let dist = SymSpell::damerau_levenshtein_distance("hello", "helo", 2);
         assert_eq!(dist, 1);
-        
+
         let dist = SymSpell::damerau_levenshtein_distance("hello", "world", 2);
         assert_eq!(dist, -1); // Exceeds max distance
     }

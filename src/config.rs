@@ -26,9 +26,7 @@ impl Config {
         match confy::load("autocorrect", Some("config")) {
             Ok(config) => Ok(config),
             Err(err) => {
-                eprintln!(
-                    "Failed to load config, using defaults: {err}"
-                );
+                eprintln!("Failed to load config, using defaults: {err}");
                 Ok(Self::default())
             }
         }

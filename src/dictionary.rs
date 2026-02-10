@@ -29,10 +29,10 @@
 //! These words are given very high frequency (1,000,000) to ensure they are
 //! always preferred over similar dictionary words.
 
+use crate::symspell::SymSpell;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use crate::symspell::SymSpell;
 
 // Embed the dictionary file at compile time
 // If the file doesn't exist, this will fail at compile time with a clear error
@@ -95,7 +95,7 @@ impl Dictionary {
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Load built-in dictionary
         self.load_builtin_dictionary(dictionary_path)?;
-        
+
         // Load personal dictionary if it exists
         if self.personal_dict_path.exists() {
             self.load_personal_dictionary()?;
@@ -103,11 +103,11 @@ impl Dictionary {
             // Create empty personal dictionary file
             self.create_personal_dictionary()?;
         }
-        
+
         println!("Dictionary loaded: {} words", self.symspell.word_count());
         Ok(())
     }
-    
+
     /// Load the built-in dictionary from file or use fallback.
     ///
     /// Attempts to load the compile-time embedded dictionary. If it is unavailable
@@ -195,7 +195,7 @@ impl Dictionary {
         println!("Loaded custom dictionary from {}", dict_path.display());
         Ok(())
     }
-    
+
     /// Load a built-in fallback dictionary of common English words.
     ///
     /// Used when no external dictionary file is available. Contains a curated
@@ -203,47 +203,139 @@ impl Dictionary {
     fn load_fallback_dictionary(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Common English words with frequencies
         let common_words = [
-            ("the", 1000000), ("be", 500000), ("to", 450000), ("of", 400000),
-            ("and", 380000), ("a", 350000), ("in", 320000), ("that", 300000),
-            ("have", 280000), ("i", 270000), ("it", 260000), ("for", 250000),
-            ("not", 240000), ("on", 230000), ("with", 220000), ("he", 210000),
-            ("as", 200000), ("you", 195000), ("do", 190000), ("at", 185000),
-            ("this", 180000), ("but", 175000), ("his", 170000), ("by", 165000),
-            ("from", 160000), ("they", 155000), ("we", 150000), ("say", 145000),
-            ("her", 140000), ("she", 135000), ("or", 130000), ("an", 125000),
-            ("will", 120000), ("my", 115000), ("one", 110000), ("all", 105000),
-            ("would", 100000), ("there", 98000), ("their", 96000), ("what", 94000),
-            ("so", 92000), ("up", 90000), ("out", 88000), ("if", 86000),
-            ("about", 84000), ("who", 82000), ("get", 80000), ("which", 78000),
-            ("go", 76000), ("me", 74000), ("when", 72000), ("make", 70000),
-            ("can", 68000), ("like", 66000), ("time", 64000), ("no", 62000),
-            ("just", 60000), ("him", 58000), ("know", 56000), ("take", 54000),
-            ("people", 52000), ("into", 50000), ("year", 48000), ("your", 46000),
-            ("good", 44000), ("some", 42000), ("could", 40000), ("them", 38000),
-            ("see", 36000), ("other", 34000), ("than", 32000), ("then", 30000),
-            ("now", 28000), ("look", 26000), ("only", 24000), ("come", 22000),
-            ("its", 20000), ("over", 19000), ("think", 18000), ("also", 17000),
-            ("back", 16000), ("after", 15000), ("use", 14000), ("two", 13000),
-            ("how", 12000), ("our", 11000), ("work", 10000), ("first", 9500),
-            ("well", 9000), ("way", 8500), ("even", 8000), ("new", 7500),
-            ("want", 7000), ("because", 6500), ("any", 6000), ("these", 5500),
-            ("give", 5000), ("day", 4800), ("most", 4600), ("us", 4400),
-            ("is", 500000), ("was", 450000), ("are", 400000), ("were", 350000),
-            ("been", 300000), ("being", 250000), ("am", 200000),
-            ("hello", 15000), ("world", 14000), ("computer", 12000),
-            ("program", 11000), ("software", 10000), ("hardware", 9000),
-            ("internet", 8500), ("email", 8000), ("please", 7500),
-            ("thank", 7000), ("thanks", 6500), ("yes", 6000), ("okay", 5500),
+            ("the", 1000000),
+            ("be", 500000),
+            ("to", 450000),
+            ("of", 400000),
+            ("and", 380000),
+            ("a", 350000),
+            ("in", 320000),
+            ("that", 300000),
+            ("have", 280000),
+            ("i", 270000),
+            ("it", 260000),
+            ("for", 250000),
+            ("not", 240000),
+            ("on", 230000),
+            ("with", 220000),
+            ("he", 210000),
+            ("as", 200000),
+            ("you", 195000),
+            ("do", 190000),
+            ("at", 185000),
+            ("this", 180000),
+            ("but", 175000),
+            ("his", 170000),
+            ("by", 165000),
+            ("from", 160000),
+            ("they", 155000),
+            ("we", 150000),
+            ("say", 145000),
+            ("her", 140000),
+            ("she", 135000),
+            ("or", 130000),
+            ("an", 125000),
+            ("will", 120000),
+            ("my", 115000),
+            ("one", 110000),
+            ("all", 105000),
+            ("would", 100000),
+            ("there", 98000),
+            ("their", 96000),
+            ("what", 94000),
+            ("so", 92000),
+            ("up", 90000),
+            ("out", 88000),
+            ("if", 86000),
+            ("about", 84000),
+            ("who", 82000),
+            ("get", 80000),
+            ("which", 78000),
+            ("go", 76000),
+            ("me", 74000),
+            ("when", 72000),
+            ("make", 70000),
+            ("can", 68000),
+            ("like", 66000),
+            ("time", 64000),
+            ("no", 62000),
+            ("just", 60000),
+            ("him", 58000),
+            ("know", 56000),
+            ("take", 54000),
+            ("people", 52000),
+            ("into", 50000),
+            ("year", 48000),
+            ("your", 46000),
+            ("good", 44000),
+            ("some", 42000),
+            ("could", 40000),
+            ("them", 38000),
+            ("see", 36000),
+            ("other", 34000),
+            ("than", 32000),
+            ("then", 30000),
+            ("now", 28000),
+            ("look", 26000),
+            ("only", 24000),
+            ("come", 22000),
+            ("its", 20000),
+            ("over", 19000),
+            ("think", 18000),
+            ("also", 17000),
+            ("back", 16000),
+            ("after", 15000),
+            ("use", 14000),
+            ("two", 13000),
+            ("how", 12000),
+            ("our", 11000),
+            ("work", 10000),
+            ("first", 9500),
+            ("well", 9000),
+            ("way", 8500),
+            ("even", 8000),
+            ("new", 7500),
+            ("want", 7000),
+            ("because", 6500),
+            ("any", 6000),
+            ("these", 5500),
+            ("give", 5000),
+            ("day", 4800),
+            ("most", 4600),
+            ("us", 4400),
+            ("is", 500000),
+            ("was", 450000),
+            ("are", 400000),
+            ("were", 350000),
+            ("been", 300000),
+            ("being", 250000),
+            ("am", 200000),
+            ("hello", 15000),
+            ("world", 14000),
+            ("computer", 12000),
+            ("program", 11000),
+            ("software", 10000),
+            ("hardware", 9000),
+            ("internet", 8500),
+            ("email", 8000),
+            ("please", 7500),
+            ("thank", 7000),
+            ("thanks", 6500),
+            ("yes", 6000),
+            ("okay", 5500),
         ];
-        
+
         for (word, freq) in common_words.iter() {
             self.symspell.insert(word.to_string(), *freq);
         }
-        
-        println!("Loaded fallback dictionary with {} common words", common_words.len());
+
+        println!(
+            "Loaded fallback dictionary with {} common words",
+            common_words.len()
+        );
         Ok(())
     }
-    
+
     /// Load the user's personal dictionary.
     ///
     /// Reads words from the personal dictionary file and adds them to
@@ -255,23 +347,23 @@ impl Dictionary {
     fn load_personal_dictionary(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let file = File::open(&self.personal_dict_path)?;
         let reader = BufReader::new(file);
-        
+
         let mut count = 0;
         for line in reader.lines() {
             let line = line?;
             let word = line.trim().to_lowercase();
-            
+
             if !word.is_empty() && !word.starts_with('#') {
                 // Personal words get high frequency to prioritize them
                 self.symspell.insert(word, 1000000);
                 count += 1;
             }
         }
-        
+
         println!("Loaded {} personal words", count);
         Ok(())
     }
-    
+
     /// Create an empty personal dictionary file with a template.
     ///
     /// Creates the file at the personal dictionary path with instructions
@@ -287,7 +379,7 @@ impl Dictionary {
         writeln!(file)?;
         Ok(())
     }
-    
+
     /// Get the path for the personal dictionary file.
     ///
     /// Returns `%APPDATA%/Autocorrect/personal_dictionary.txt` on Windows,
@@ -298,12 +390,12 @@ impl Dictionary {
         if let Ok(appdata) = std::env::var("APPDATA") {
             let mut path = PathBuf::from(appdata);
             path.push("Autocorrect");
-            
+
             // Create directory if it doesn't exist
             if !path.exists() {
                 let _ = std::fs::create_dir_all(&path);
             }
-            
+
             path.push("personal_dictionary.txt");
             path
         } else {
@@ -311,7 +403,7 @@ impl Dictionary {
             PathBuf::from("personal_dictionary.txt")
         }
     }
-    
+
     /// Add a word to the personal dictionary.
     ///
     /// Adds the word to both the SymSpell (with high frequency) and
@@ -324,21 +416,21 @@ impl Dictionary {
     /// Returns an error if the personal dictionary file cannot be written.
     pub fn add_personal_word(&mut self, word: &str) -> Result<(), Box<dyn std::error::Error>> {
         let word = word.trim().to_lowercase();
-        
+
         // Add to SymSpell
         self.symspell.insert(word.clone(), 1000000);
-        
+
         // Append to file
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.personal_dict_path)?;
-        
+
         writeln!(file, "{}", word)?;
-        
+
         Ok(())
     }
-    
+
     /// Look up spelling corrections for a word.
     ///
     /// Returns a list of suggestions sorted by edit distance (ascending)
@@ -367,7 +459,7 @@ impl Dictionary {
     /// `Some(corrected_word)` if a correction is available, `None` otherwise.
     pub fn get_correction(&self, word: &str) -> Option<String> {
         let suggestions = self.lookup(word);
-        
+
         // Return correction only if:
         // 1. There are suggestions
         // 2. The top suggestion is different from input
@@ -377,7 +469,7 @@ impl Dictionary {
                 return Some(suggestion.term.clone());
             }
         }
-        
+
         None
     }
 }
@@ -385,19 +477,19 @@ impl Dictionary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_fallback_dictionary() {
         let mut dict = Dictionary::new();
         dict.load_fallback_dictionary().unwrap();
         assert!(dict.symspell.word_count() > 0);
     }
-    
+
     #[test]
     fn test_correction() {
         let mut dict = Dictionary::new();
         dict.load_fallback_dictionary().unwrap();
-        
+
         let correction = dict.get_correction("teh");
         assert_eq!(correction, Some("the".to_string()));
     }

@@ -61,22 +61,34 @@
 
 use clap::Parser;
 use parking_lot::Mutex;
+#[cfg(windows)]
 use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
-use std::sync::Arc;
 use std::ptr::null_mut;
-use winapi::um::winuser::{MessageBoxW, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK};
-use winapi::um::winuser::*;
-use winapi::um::libloaderapi::GetModuleHandleW;
-use winapi::shared::windef::HHOOK;
-use winapi::shared::minwindef::{LPARAM, WPARAM, LRESULT};
-use tray_icon::{TrayIconBuilder, menu::Menu, menu::MenuItem};
+use std::sync::Arc;
 
-mod symspell;
-mod dictionary;
-mod corrector;
-mod trigram;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use tray_icon::{menu::Menu, menu::MenuItem, TrayIconBuilder};
+#[cfg(windows)]
+use winapi::shared::minwindef::{LPARAM, LRESULT, WPARAM};
+#[cfg(windows)]
+use winapi::shared::windef::HHOOK;
+#[cfg(windows)]
+use winapi::um::libloaderapi::GetModuleHandleW;
+#[cfg(windows)]
+use winapi::um::winuser::*;
+#[cfg(windows)]
+use winapi::um::winuser::{MessageBoxW, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK};
+
+#[cfg(not(windows))]
+type HHOOK = *mut std::ffi::c_void;
+
 mod config;
+mod corrector;
+mod dictionary;
+mod symspell;
+mod trigram;
 mod updater;
 
 use config::Config;
@@ -105,6 +117,7 @@ struct Args {
     check_update: bool,
 }
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetConsoleWindow() -> *mut std::ffi::c_void;
@@ -130,34 +143,51 @@ fn corrector() -> &'static Arc<Mutex<Corrector>> {
 }
 
 /// Convert UTF-8 Rust strings to UTF-16 and display a modal Windows message box.
-fn show_dialog(title: &str, message: &str, icon_flag: u32) {
-    let title_wide: Vec<u16> = OsStr::new(title).encode_wide().chain(Some(0)).collect();
-    let message_wide: Vec<u16> = OsStr::new(message).encode_wide().chain(Some(0)).collect();
+fn show_dialog(title: &str, message: &str, _icon_flag: u32) {
+    #[cfg(windows)]
+    {
+        let title_wide: Vec<u16> = OsStr::new(title).encode_wide().chain(Some(0)).collect();
+        let message_wide: Vec<u16> = OsStr::new(message).encode_wide().chain(Some(0)).collect();
 
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            message_wide.as_ptr(),
-            title_wide.as_ptr(),
-            MB_OK | icon_flag,
-        );
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message_wide.as_ptr(),
+                title_wide.as_ptr(),
+                MB_OK | _icon_flag,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        println!("{}: {}", title, message);
     }
 }
 
 fn show_error_dialog(title: &str, message: &str) {
+    #[cfg(windows)]
     show_dialog(title, message, MB_ICONERROR);
+    #[cfg(not(windows))]
+    show_dialog(title, message, 0);
 }
 
 fn show_warning_dialog(title: &str, message: &str) {
+    #[cfg(windows)]
     show_dialog(title, message, MB_ICONWARNING);
+    #[cfg(not(windows))]
+    show_dialog(title, message, 0);
 }
 
 #[allow(dead_code)]
 fn show_info_dialog(title: &str, message: &str) {
+    #[cfg(windows)]
     show_dialog(title, message, MB_ICONINFORMATION);
+    #[cfg(not(windows))]
+    show_dialog(title, message, 0);
 }
 
 fn hide_console_window() {
+    #[cfg(windows)]
     unsafe {
         let hwnd = GetConsoleWindow();
         if !hwnd.is_null() {
@@ -186,20 +216,21 @@ fn hide_console_window() {
 /// # Returns
 /// * `1` - Suppress the key (correction was made)
 /// * Other - Result from `CallNextHookEx` (pass through)
+#[cfg(windows)]
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
         let kb_struct = *(lparam as *const KBDLLHOOKSTRUCT);
         let vk_code = kb_struct.vkCode;
         let is_key_down = wparam == WM_KEYDOWN as usize || wparam == WM_SYSKEYDOWN as usize;
-        
+
         if is_key_down {
             let mut corrector = corrector().lock();
-            
+
             // Check if autocorrect is enabled
             if !corrector.is_enabled() {
                 return CallNextHookEx(HOOK_HANDLE, code, wparam, lparam);
             }
-            
+
             // Handle the key press
             if corrector.handle_key(vk_code) {
                 // Key was handled (correction was made), suppress it
@@ -207,7 +238,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
             }
         }
     }
-    
+
     CallNextHookEx(HOOK_HANDLE, code, wparam, lparam)
 }
 
@@ -225,19 +256,17 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 /// Returns an error if `SetWindowsHookExW` fails (returns null).
 /// This typically happens if the application lacks sufficient privileges.
 unsafe fn install_hook() -> Result<(), String> {
-    let h_instance = GetModuleHandleW(null_mut());
-    
-    HOOK_HANDLE = SetWindowsHookExW(
-        WH_KEYBOARD_LL,
-        Some(keyboard_proc),
-        h_instance,
-        0
-    );
-    
-    if HOOK_HANDLE.is_null() {
-        return Err("Failed to install keyboard hook".to_string());
+    #[cfg(windows)]
+    {
+        let h_instance = GetModuleHandleW(null_mut());
+
+        HOOK_HANDLE = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), h_instance, 0);
+
+        if HOOK_HANDLE.is_null() {
+            return Err("Failed to install keyboard hook".to_string());
+        }
     }
-    
+
     Ok(())
 }
 
@@ -248,6 +277,7 @@ unsafe fn install_hook() -> Result<(), String> {
 /// Must be called before application exit to avoid leaving the keyboard
 /// in an inconsistent state.
 unsafe fn uninstall_hook() {
+    #[cfg(windows)]
     if !HOOK_HANDLE.is_null() {
         UnhookWindowsHookEx(HOOK_HANDLE);
         HOOK_HANDLE = null_mut();
@@ -319,7 +349,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(e.into());
         }
     }
-    
+
     // Install keyboard hook
     unsafe {
         if let Err(e) = install_hook() {
@@ -331,130 +361,147 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(e.into());
         }
     }
-    
-    // Create tray icon menu
-    let menu = Menu::new();
-    let toggle_item = MenuItem::new(
-        if config.enabled_by_default {
-            "Disable Autocorrect"
-        } else {
-            "Enable Autocorrect"
-        },
-        true,
-        None,
-    );
-    let quit_item = MenuItem::new("Quit", true, None);
-    
-    if let Err(e) = menu.append(&toggle_item) {
-        println!("Failed to append toggle menu item: {}", e);
-        show_error_dialog(
-            "Autocorrect Error",
-            &format!("Failed to create tray menu: {}", e),
+
+    #[cfg(windows)]
+    {
+        // Create tray icon menu
+        let menu = Menu::new();
+        let toggle_item = MenuItem::new(
+            if config.enabled_by_default {
+                "Disable Autocorrect"
+            } else {
+                "Enable Autocorrect"
+            },
+            true,
+            None,
         );
-        unsafe {
-            uninstall_hook();
-        }
-        return Err(e.into());
-    }
-    if let Err(e) = menu.append(&quit_item) {
-        println!("Failed to append quit menu item: {}", e);
-        show_error_dialog(
-            "Autocorrect Error",
-            &format!("Failed to create tray menu: {}", e),
-        );
-        unsafe {
-            uninstall_hook();
-        }
-        return Err(e.into());
-    }
-    
-    // Create tray icon
-    let icon = load_icon();
-    let _tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_tooltip(if config.enabled_by_default {
-            "Autocorrect - Enabled"
-        } else {
-            "Autocorrect - Disabled"
-        })
-        .with_icon(icon)
-        .build()
-        .map_err(|e| {
-            println!("Failed to create tray icon: {}", e);
+        let quit_item = MenuItem::new("Quit", true, None);
+
+        if let Err(e) = menu.append(&toggle_item) {
+            println!("Failed to append toggle menu item: {}", e);
             show_error_dialog(
                 "Autocorrect Error",
-                &format!("Failed to create system tray icon: {}", e),
+                &format!("Failed to create tray menu: {}", e),
             );
             unsafe {
                 uninstall_hook();
             }
-            e
-        })?;
-    
-    println!("Autocorrect started. Running in system tray.");
-    println!("Press Ctrl+C to quit.");
-    
-    // Menu event handling
-    let menu_channel = tray_icon::menu::MenuEvent::receiver();
-    
-    // Message loop
-    let mut msg = std::mem::MaybeUninit::uninit();
-    unsafe {
-        loop {
-            // Check for menu events
-            if let Ok(event) = menu_channel.try_recv() {
-                if event.id == toggle_item.id() {
-                    let mut corrector = corrector().lock();
-                    corrector.toggle_enabled();
-                    config.enabled_by_default = corrector.is_enabled();
+            return Err(e.into());
+        }
+        if let Err(e) = menu.append(&quit_item) {
+            println!("Failed to append quit menu item: {}", e);
+            show_error_dialog(
+                "Autocorrect Error",
+                &format!("Failed to create tray menu: {}", e),
+            );
+            unsafe {
+                uninstall_hook();
+            }
+            return Err(e.into());
+        }
 
-                    if let Err(err) = config.save() {
-                        eprintln!("Failed to save config: {err}");
-                    }
-                    
-                    let new_label = if corrector.is_enabled() {
-                        "Disable Autocorrect"
-                    } else {
-                        "Enable Autocorrect"
-                    };
-                    toggle_item.set_text(new_label);
-                    
-                    let tooltip = if corrector.is_enabled() {
-                        "Autocorrect - Enabled"
-                    } else {
-                        "Autocorrect - Disabled"
-                    };
-                    if let Err(e) = _tray_icon.set_tooltip(Some(tooltip)) {
-                        println!("Failed to update tray tooltip: {}", e);
-                        show_warning_dialog(
-                            "Autocorrect Warning",
-                            &format!(
-                                "Autocorrect state changed, but tray tooltip could not be updated: {}",
-                                e
-                            ),
+        // Create tray icon
+        let icon = load_icon();
+        let _tray_icon = TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_tooltip(if config.enabled_by_default {
+                "Autocorrect - Enabled"
+            } else {
+                "Autocorrect - Disabled"
+            })
+            .with_icon(icon)
+            .build()
+            .map_err(|e| {
+                println!("Failed to create tray icon: {}", e);
+                show_error_dialog(
+                    "Autocorrect Error",
+                    &format!("Failed to create system tray icon: {}", e),
+                );
+                unsafe {
+                    uninstall_hook();
+                }
+                e
+            })?;
+
+        println!("Autocorrect started. Running in system tray.");
+        println!("Press Ctrl+C to quit.");
+
+        // Menu event handling
+        let menu_channel = tray_icon::menu::MenuEvent::receiver();
+
+        // Message loop
+        let mut msg = std::mem::MaybeUninit::uninit();
+        unsafe {
+            loop {
+                // Check for menu events
+                if let Ok(event) = menu_channel.try_recv() {
+                    if event.id == toggle_item.id() {
+                        let mut corrector = corrector().lock();
+                        corrector.toggle_enabled();
+                        config.enabled_by_default = corrector.is_enabled();
+
+                        if let Err(err) = config.save() {
+                            eprintln!("Failed to save config: {err}");
+                        }
+
+                        let new_label = if corrector.is_enabled() {
+                            "Disable Autocorrect"
+                        } else {
+                            "Enable Autocorrect"
+                        };
+                        toggle_item.set_text(new_label);
+
+                        let tooltip = if corrector.is_enabled() {
+                            "Autocorrect - Enabled"
+                        } else {
+                            "Autocorrect - Disabled"
+                        };
+                        if let Err(e) = _tray_icon.set_tooltip(Some(tooltip)) {
+                            println!("Failed to update tray tooltip: {}", e);
+                            show_warning_dialog(
+                                "Autocorrect Warning",
+                                &format!(
+                                    "Autocorrect state changed, but tray tooltip could not be updated: {}",
+                                    e
+                                ),
+                            );
+                        }
+
+                        println!(
+                            "Autocorrect {}",
+                            if corrector.is_enabled() {
+                                "enabled"
+                            } else {
+                                "disabled"
+                            }
                         );
+                    } else if event.id == quit_item.id() {
+                        break;
                     }
-                    
-                    println!("Autocorrect {}", if corrector.is_enabled() { "enabled" } else { "disabled" });
-                } else if event.id == quit_item.id() {
+                }
+
+                // Process Windows messages
+                let ret = GetMessageW(msg.as_mut_ptr(), null_mut(), 0, 0);
+                if ret <= 0 {
                     break;
                 }
+
+                TranslateMessage(msg.as_ptr());
+                DispatchMessageW(msg.as_ptr());
             }
-            
-            // Process Windows messages
-            let ret = GetMessageW(msg.as_mut_ptr(), null_mut(), 0, 0);
-            if ret <= 0 {
-                break;
-            }
-            
-            TranslateMessage(msg.as_ptr());
-            DispatchMessageW(msg.as_ptr());
+
+            // Cleanup
+            uninstall_hook();
         }
-        
-        // Cleanup
-        uninstall_hook();
     }
-    
+
+    #[cfg(not(windows))]
+    {
+        println!("Autocorrect started (no-op on non-Windows).");
+        println!("Press Ctrl+C to quit.");
+        // We could use a signal handler here, but for a no-op build loop is fine.
+    }
+
     println!("Autocorrect stopped.");
     Ok(())
 }
@@ -469,12 +516,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// # Panics
 /// Panics if the icon data is invalid (should never happen with valid RGBA).
+#[cfg(windows)]
 fn load_icon() -> tray_icon::Icon {
     // Create a simple 16x16 RGBA icon (green checkmark-ish)
     let width = 16;
     let height = 16;
     let mut rgba = vec![0u8; (width * height * 4) as usize];
-    
+
     // Simple green circle pattern
     for y in 0..height {
         for x in 0..width {
@@ -482,17 +530,17 @@ fn load_icon() -> tray_icon::Icon {
             let dx = x as i32 - 8;
             let dy = y as i32 - 8;
             let dist_sq = dx * dx + dy * dy;
-            
+
             if dist_sq < 36 {
-                rgba[idx] = 50;      // R
+                rgba[idx] = 50; // R
                 rgba[idx + 1] = 200; // G
-                rgba[idx + 2] = 50;  // B
+                rgba[idx + 2] = 50; // B
                 rgba[idx + 3] = 255; // A
             } else {
                 rgba[idx + 3] = 0; // Transparent
             }
         }
     }
-    
+
     tray_icon::Icon::from_rgba(rgba, width, height).expect("Failed to create icon")
 }

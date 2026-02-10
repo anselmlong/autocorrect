@@ -81,18 +81,16 @@ impl TrigramModel {
                 self.total_words += 1;
 
                 if i > 0 {
-                    *self.bigram_counts
+                    *self
+                        .bigram_counts
                         .entry((words[i - 1].clone(), words[i].clone()))
                         .or_insert(0) += 1;
                 }
 
                 if i > 1 {
-                    *self.trigram_counts
-                        .entry((
-                            words[i - 2].clone(),
-                            words[i - 1].clone(),
-                            words[i].clone(),
-                        ))
+                    *self
+                        .trigram_counts
+                        .entry((words[i - 2].clone(), words[i - 1].clone(), words[i].clone()))
                         .or_insert(0) += 1;
                 }
             }
@@ -117,19 +115,23 @@ impl TrigramModel {
     /// let p = model.trigram_probability("fox", "quick", "the");
     /// // Returns P("fox" | "quick", "the")
     /// ```
-    pub fn trigram_probability(
-        &self,
-        word: &str,
-        prev: &str,
-        prev_prev: &str,
-    ) -> f64 {
-        if let Some(&trigram_count) = self.trigram_counts.get(&(prev_prev.to_string(), prev.to_string(), word.to_string())) {
-            if let Some(&bigram_count) = self.bigram_counts.get(&(prev_prev.to_string(), prev.to_string())) {
+    pub fn trigram_probability(&self, word: &str, prev: &str, prev_prev: &str) -> f64 {
+        if let Some(&trigram_count) =
+            self.trigram_counts
+                .get(&(prev_prev.to_string(), prev.to_string(), word.to_string()))
+        {
+            if let Some(&bigram_count) = self
+                .bigram_counts
+                .get(&(prev_prev.to_string(), prev.to_string()))
+            {
                 return trigram_count as f64 / bigram_count as f64;
             }
         }
 
-        if let Some(&bigram_count) = self.bigram_counts.get(&(prev.to_string(), word.to_string())) {
+        if let Some(&bigram_count) = self
+            .bigram_counts
+            .get(&(prev.to_string(), word.to_string()))
+        {
             if let Some(&unigram_count) = self.unigram_counts.get(prev) {
                 return bigram_count as f64 / unigram_count as f64;
             }
