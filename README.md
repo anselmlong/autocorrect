@@ -241,12 +241,17 @@ techterm
 
 ## How It Works
 
-1. **Keyboard Hook**: Installs a low-level Windows keyboard hook that sees every keystroke
+1. **Keyboard Hook**: Installs a low-level Windows keyboard hook (`WH_KEYBOARD_LL`) that sees every keystroke
 2. **Word Building**: Tracks letters as you type to build the current word
-3. **Trigger Points**: When you press space/punctuation/enter, checks if the word needs correction
-4. **SymSpell Lookup**: Fast dictionary lookup using the SymSpell algorithm
-5. **Auto-replace**: Simulates backspaces to delete the misspelled word, then types the correction
-6. **Undo Buffer**: Stores the last correction for 5 seconds, allowing Ctrl+Z to revert
+3. **Application Detection**: Detects the type of focused window (Notepad vs Notion vs Chrome)
+4. **Input Method Selection**: Chooses the best input method based on the application:
+   - **SendInput** with thread attachment for standard Win32 apps (Notepad, Word)
+   - **SendMessage** fallback for Electron apps (Notion, VS Code, Slack)
+   - **SendMessage** fallback for browsers (Chrome, Edge, Firefox)
+5. **Trigger Points**: When you press space/punctuation/enter, checks if the word needs correction
+6. **SymSpell Lookup**: Fast dictionary lookup using the SymSpell algorithm (<10ms)
+7. **Auto-replace**: Deletes the misspelled word using backspaces, then types the correction
+8. **Undo Buffer**: Stores the last correction for 5 seconds, allowing Ctrl+Z to revert
 
 ## Performance
 
@@ -262,12 +267,42 @@ techterm
 - ✅ **Local processing**: All corrections happen on your machine
 - ✅ **Open source**: Audit the code yourself
 
+## Application Compatibility
+
+Autocorrect now supports multiple input methods to work with different types of applications:
+
+### ✅ Fully Supported
+- **Notepad, WordPad** - Standard Windows text editors
+- **Microsoft Office** - Word, Excel, PowerPoint
+- **Visual Studio Code** - Using SendMessage fallback for Electron compatibility
+- **Notion** - Using SendMessage fallback for Electron compatibility
+- **Browsers** - Chrome, Edge, Firefox (using SendMessage fallback)
+- **Chat Apps** - Slack, Discord, Microsoft Teams
+
+### How It Works
+
+The application automatically detects the type of window you're typing in and switches input methods:
+
+1. **Standard Apps** (Notepad, Word): Uses `SendInput` with thread attachment for proper focus management
+2. **Electron Apps** (Notion, VS Code): Uses `SendMessage` fallback for Chromium compatibility
+3. **Browsers** (Chrome, Edge): Uses `SendMessage` fallback for web content
+
+The detection happens automatically and transparently - you don't need to configure anything.
+
+### Technical Details
+
+- **Input Method Selection**: Based on window class name detection
+- **Key Delays**: Standard apps use 5ms delays, Electron/Chromium apps use 10ms for React/Virtual DOM synchronization
+- **Thread Attachment**: Ensures proper focus management across different applications
+- **Fallback Mechanism**: Automatically falls back to SendMessage if SendInput fails
+
 ## Limitations
 
 - Only works on Windows (uses Windows-specific APIs)
 - Cannot correct inside password fields (by design, for security)
 - May not work in some applications with custom input handling
 - Only supports English dictionary by default (add your own for other languages)
+- Games with DirectInput may not work (different input system)
 
 ## Troubleshooting
 
@@ -279,6 +314,18 @@ techterm
 - Check that autocorrect is enabled (tray icon right-click menu)
 - Some applications block keyboard hooks
 - Try restarting the application
+- For Electron apps (Notion, VS Code), ensure the app window has focus
+
+### Corrections work in Notepad but not in Notion/VS Code
+This should be fixed in the latest version. The app now automatically:
+1. Detects Electron/Chromium-based applications
+2. Uses SendMessage instead of SendInput for these apps
+3. Adjusts timing delays for React/Virtual DOM synchronization
+
+If you're still having issues:
+- Make sure you're running the latest version
+- Check that the application window has proper focus
+- Try clicking in the text area before typing
 
 ### Wrong corrections
 - Add correct words to your personal dictionary
